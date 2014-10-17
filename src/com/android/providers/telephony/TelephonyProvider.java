@@ -34,18 +34,15 @@ import android.net.Uri;
 import android.os.Environment;
 import android.provider.Telephony;
 import android.telephony.TelephonyManager;
-import android.telephony.MSimTelephonyManager;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.Xml;
 
 import com.android.internal.telephony.BaseCommands;
-import com.android.internal.telephony.MSimConstants;
 import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.TelephonyProperties;
 import com.android.internal.util.XmlUtils;
-import com.android.internal.telephony.MSimConstants;
 import com.android.internal.telephony.TelephonyProperties;
 
 import org.xmlpull.v1.XmlPullParser;
@@ -62,14 +59,13 @@ public class TelephonyProvider extends ContentProvider
     private static final String DATABASE_NAME = "telephony.db";
     private static final boolean DBG = true;
 
-    private static final int DATABASE_VERSION = 15 << 16;
+    private static final int DATABASE_VERSION = 9 << 16;
     private static final int URL_TELEPHONY = 1;
     private static final int URL_CURRENT = 2;
     private static final int URL_ID = 3;
     private static final int URL_RESTOREAPN = 4;
     private static final int URL_PREFERAPN = 5;
     private static final int URL_PREFERAPN_NO_UPDATE = 6;
-    private static final int URL_PREFERAPN_W_SUB_ID = 7;
 
     private static final String TAG = "TelephonyProvider";
     private static final String CARRIERS_TABLE = "carriers";
@@ -101,7 +97,6 @@ public class TelephonyProvider extends ContentProvider
         s_urlMatcher.addURI("telephony", "carriers/restore", URL_RESTOREAPN);
         s_urlMatcher.addURI("telephony", "carriers/preferapn", URL_PREFERAPN);
         s_urlMatcher.addURI("telephony", "carriers/preferapn_no_update", URL_PREFERAPN_NO_UPDATE);
-        s_urlMatcher.addURI("telephony", "carriers/preferapn/#", URL_PREFERAPN_W_SUB_ID);
 
         s_currentNullMap = new ContentValues(1);
         s_currentNullMap.put("current", (Long) null);
@@ -543,97 +538,23 @@ public class TelephonyProvider extends ContentProvider
         return true;
     }
 
-    private String getColumnApnIdKey(int subId) {
-        String result = COLUMN_APN_ID;
-        // In case multi-sim is enabled,
-        // if subId is given, use column name "apn_id" + sub id;
-        // if subId is not given, use column name "apn_id" + preferred data sub id.
-        //
-        // In case multi-sim is not enabled,
-        // use column name "apn_id".
-        if (MSimTelephonyManager.getDefault().isMultiSimEnabled()) {
-            switch (subId) {
-            case MSimConstants.SUB1:
-            case MSimConstants.SUB2:
-                result += String.valueOf(subId);
-                break;
-            default:
-                result += String.valueOf(MSimTelephonyManager.getDefault()
-                        .getPreferredDataSubscription());
-                break;
-           }
-        }
-        Log.d(TAG, "Column apn id key is '" + result + "'");
-        return result;
-    }
-
-    private void setPreferredApnId(Long id, int subId) {
+    private void setPreferredApnId(Long id) {
         SharedPreferences sp = getContext().getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE);
         SharedPreferences.Editor editor = sp.edit();
-        editor.putLong(getColumnApnIdKey(subId), id != null ? id.longValue() : -1);
+        editor.putLong(COLUMN_APN_ID, id != null ? id.longValue() : -1);
         editor.apply();
     }
 
-    private void setPreferredApnId(Long id) {
-        setPreferredApnId(id, -1);
-    }
-
-    private String getOperatorNumeric(int subId) {
-        if (subId != MSimConstants.SUB1 && subId != MSimConstants.SUB2) {
-            subId = MSimTelephonyManager.getDefault().getDefaultSubscription();
-        }
-        String numeric = MSimTelephonyManager.getTelephonyProperty(
-                TelephonyProperties.PROPERTY_APN_SIM_OPERATOR_NUMERIC, subId, null);
-        if (numeric != null && numeric.length() > 0) {
-            return numeric;
-        } else {
-            return null;
-        }
-    }
-
-    private long getPreferredApnId(int subId) {
-        long apnId;
+   private long getPreferredApnId() {
         SharedPreferences sp = getContext().getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE);
-        apnId = sp.getLong(getColumnApnIdKey(subId), -1);
-        if (apnId == -1) {
-            // Check if there is an initial preferred apn
-            String numeric = getOperatorNumeric(subId);
-            if (numeric != null) {
-                checkPermission();
-                try {
-                    SQLiteQueryBuilder qb = new SQLiteQueryBuilder();
-                    qb.setTables("carriers");
-
-                    String where;
-                    where = "numeric=\"" + numeric + "\"";
-                    where += " AND preferred = 1";
-
-                    SQLiteDatabase db = mOpenHelper.getReadableDatabase();
-                    Cursor cursor = qb.query(db, new String[] {"_id"}, where,
-                            null, null, null, Telephony.Carriers.DEFAULT_SORT_ORDER);
-                    cursor.moveToFirst();
-                    if (!cursor.isAfterLast()) {
-                        final int ID_INDEX = 0;
-                        String key = cursor.getString(ID_INDEX);
-                        apnId = Long.valueOf(key);
-                        Log.d(TAG, "Found an inital preferred apn. id = " + apnId);
-                    } else {
-                        apnId = getDefaultPreferredApnId();
-                        if (apnId > -1) {
-                                setPreferredApnId(apnId);
-                        }
-                    }
-                } catch (SQLException e) {
-                    Log.e(TAG, "got exception while checking initial preferred apn: " + e);
-                }
+        long id = sp.getLong(COLUMN_APN_ID, -1);
+        if (id == -1) {
+            id = getDefaultPreferredApnId();
+            if (id > -1) {
+                setPreferredApnId(id);
             }
         }
-
-        return apnId;
-    }
-
-    private long getPreferredApnId() {
-        return getPreferredApnId(-1);
+        return id;
     }
 
     private long getDefaultPreferredApnId() {
@@ -699,11 +620,6 @@ public class TelephonyProvider extends ContentProvider
                 break;
             }
 
-            case URL_PREFERAPN_W_SUB_ID: {
-                qb.appendWhere("_id = " + getPreferredApnId(parseSubId(url)));
-                break;
-            }
-
             default: {
                 return null;
             }
@@ -730,44 +646,7 @@ public class TelephonyProvider extends ContentProvider
         SQLiteDatabase db = mOpenHelper.getReadableDatabase();
         Cursor ret = null;
         try {
-            if (sConfigRoamingAreaApnRestrictionEnabled) {
-                // Replaces WHERE clause from
-                //  numeric = 'xxxxxx'
-                // to
-                //  (numeric = 'xxxxxx' and (v_mccmnc = '000000' or v_mccmnc = 'yyyyyy'))
-                String newSelection = null;
-                if (selection != null) {
-                    String operatorNumeric = null;
-                    if (MSimTelephonyManager.getDefault().isMultiSimEnabled()) {
-                        operatorNumeric = MSimTelephonyManager.getDefault().getNetworkOperator(
-                                MSimTelephonyManager.getDefault().getPreferredDataSubscription());
-                    } else {
-                        operatorNumeric = TelephonyManager.getDefault().getNetworkOperator();
-                    }
-
-                    operatorNumeric = (operatorNumeric == null) ? "" : operatorNumeric;
-                    String replacement = NUMERIC_VMCCMNC_REGEX_PT1 + operatorNumeric
-                        + "'\\)\\)";
-                    newSelection = selection.replaceAll(NUMERIC_MATCH_REGEX,
-                            replacement);
-                    Log.d(TAG, "Selection has been replaced to: " + newSelection);
-                }
-                ret = qb.query(db, projectionIn, newSelection, selectionArgs, null, null, sort);
-            } else {
-                ret = qb.query(db, projectionIn, selection, selectionArgs, null, null, sort);
-            }
-
-            if (sConfigDefaultApnEnabled) {
-                // Additional query for default APNs.
-                if (ret != null && ret.getCount() == 0) {
-                    String newSelection = null;
-                    if (selection != null) {
-                        newSelection = selection.replaceAll(NUMERIC_MATCH_REGEX,
-                                NUMERIC_ADD_DEFAULT_REGEX);
-                    }
-                    ret = qb.query(db, projectionIn, newSelection, selectionArgs, null, null, sort);
-                }
-            }
+            ret = qb.query(db, projectionIn, selection, selectionArgs, null, null, sort);
         } catch (SQLException e) {
             Log.e(TAG, "got exception when querying: " + e);
         }
@@ -788,7 +667,6 @@ public class TelephonyProvider extends ContentProvider
 
         case URL_PREFERAPN:
         case URL_PREFERAPN_NO_UPDATE:
-        case URL_PREFERAPN_W_SUB_ID:
             return "vnd.android.cursor.item/telephony-carrier";
 
         default:
@@ -926,16 +804,6 @@ public class TelephonyProvider extends ContentProvider
                 }
                 break;
             }
-
-            case URL_PREFERAPN_W_SUB_ID:
-            {
-                if (initialValues != null) {
-                    if(initialValues.containsKey(COLUMN_APN_ID)) {
-                        setPreferredApnId(initialValues.getAsLong(COLUMN_APN_ID), parseSubId(url));
-                    }
-                }
-                break;
-            }
         }
 
         if (notify) {
@@ -986,13 +854,6 @@ public class TelephonyProvider extends ContentProvider
             {
                 setPreferredApnId((long)-1);
                 if (match == URL_PREFERAPN) count = 1;
-                break;
-            }
-
-            case URL_PREFERAPN_W_SUB_ID:
-            {
-                setPreferredApnId((long)-1, parseSubId(url));
-                count = 1;
                 break;
             }
 
@@ -1049,17 +910,6 @@ public class TelephonyProvider extends ContentProvider
                     if (values.containsKey(COLUMN_APN_ID)) {
                         setPreferredApnId(values.getAsLong(COLUMN_APN_ID));
                         if (match == URL_PREFERAPN) count = 1;
-                    }
-                }
-                break;
-            }
-
-            case URL_PREFERAPN_W_SUB_ID:
-            {
-                if (values != null) {
-                    if (values.containsKey(COLUMN_APN_ID)) {
-                        setPreferredApnId(values.getAsLong(COLUMN_APN_ID), parseSubId(url));
-                        count = 1;
                     }
                 }
                 break;

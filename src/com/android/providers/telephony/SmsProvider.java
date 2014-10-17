@@ -37,13 +37,10 @@ import android.provider.Telephony.MmsSms;
 import android.provider.Telephony.Sms;
 import android.provider.Telephony.TextBasedSmsColumns;
 import android.provider.Telephony.Threads;
-import android.telephony.MSimSmsManager;
 import android.telephony.SmsManager;
 import android.telephony.SmsMessage;
 import android.text.TextUtils;
 import android.util.Log;
-
-import com.android.internal.telephony.MSimConstants;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -208,27 +205,12 @@ public class SmsProvider extends ContentProvider {
                 break;
 
             case SMS_ALL_ICC:
-                return getAllMessagesFromIcc(MSimConstants.INVALID_SUBSCRIPTION);
+                return getAllMessagesFromIcc();
 
             case SMS_ICC:
-                String messageIndexIcc = url.getPathSegments().get(MESSAGE_ID);
+                String messageIndexString = url.getPathSegments().get(1);
 
-                return getSingleMessageFromIcc(messageIndexIcc,
-                        MSimConstants.INVALID_SUBSCRIPTION);
-
-            case SMS_ALL_ICC1:
-                return getAllMessagesFromIcc(MSimConstants.SUB1);
-
-            case SMS_ICC1:
-                String messageIndexIcc1 = url.getPathSegments().get(MESSAGE_ID);
-                return getSingleMessageFromIcc(messageIndexIcc1, MSimConstants.SUB1);
-
-            case SMS_ALL_ICC2:
-                return getAllMessagesFromIcc(MSimConstants.SUB2);
-
-            case SMS_ICC2:
-                String messageIndexIcc2 = url.getPathSegments().get(MESSAGE_ID);
-                return getSingleMessageFromIcc(messageIndexIcc2, MSimConstants.SUB2);
+                return getSingleMessageFromIcc(messageIndexString);
 
             default:
                 Log.e(TAG, "Invalid request: " + url);
@@ -253,58 +235,34 @@ public class SmsProvider extends ContentProvider {
         return ret;
     }
 
-    private Object[] convertIccToSms(SmsMessage message, int id, int subscription) {
+    private Object[] convertIccToSms(SmsMessage message, int id) {
         // N.B.: These calls must appear in the same order as the
         // columns appear in ICC_COLUMNS.
-        int statusOnIcc = message.getStatusOnIcc();
-        int type = Sms.MESSAGE_TYPE_ALL;
-        switch (statusOnIcc) {
-            case SmsManager.STATUS_ON_ICC_READ:
-            case SmsManager.STATUS_ON_ICC_UNREAD:
-                type = Sms.MESSAGE_TYPE_INBOX;
-                break;
-            case SmsManager.STATUS_ON_ICC_SENT:
-                type = Sms.MESSAGE_TYPE_SENT;
-                break;
-            case SmsManager.STATUS_ON_ICC_UNSENT:
-                type = Sms.MESSAGE_TYPE_OUTBOX;
-                break;
-        }
-        Object[] row = new Object[14];
+        Object[] row = new Object[13];
         row[0] = message.getServiceCenterAddress();
-        row[1] = (type == Sms.MESSAGE_TYPE_INBOX)
-                ? message.getDisplayOriginatingAddress()
-                : message.getRecipientAddress();
+        row[1] = message.getDisplayOriginatingAddress();
         row[2] = String.valueOf(message.getMessageClass());
         row[3] = message.getDisplayMessageBody();
         row[4] = message.getTimestampMillis();
-        row[5] = statusOnIcc;
+        row[5] = Sms.STATUS_NONE;
         row[6] = message.getIndexOnIcc();
         row[7] = message.isStatusReportMessage();
         row[8] = "sms";
-        row[9] = type;
+        row[9] = TextBasedSmsColumns.MESSAGE_TYPE_ALL;
         row[10] = 0;      // locked
         row[11] = 0;      // error_code
         row[12] = id;
-        row[13] = subscription;
         return row;
     }
 
     /**
      * Return a Cursor containing just one message from the ICC.
      */
-    private Cursor getSingleMessageFromIcc(String messageIndexString, int subscription) {
-        ArrayList<SmsMessage> messages;
+    private Cursor getSingleMessageFromIcc(String messageIndexString) {
         try {
             int messageIndex = Integer.parseInt(messageIndexString);
-
-            if (subscription == MSimConstants.INVALID_SUBSCRIPTION) {
-                SmsManager smsManager = SmsManager.getDefault();
-                messages = smsManager.getAllMessagesFromIcc();
-            } else {
-                MSimSmsManager mSimSmsManager = MSimSmsManager.getDefault();
-                messages = mSimSmsManager.getAllMessagesFromIcc(subscription);
-            }
+            SmsManager smsManager = SmsManager.getDefault();
+            ArrayList<SmsMessage> messages = smsManager.getAllMessagesFromIcc();
 
             SmsMessage message = messages.get(messageIndex);
             if (message == null) {
@@ -312,7 +270,7 @@ public class SmsProvider extends ContentProvider {
                         "Message not retrieved. ID: " + messageIndexString);
             }
             MatrixCursor cursor = new MatrixCursor(ICC_COLUMNS, 1);
-            cursor.addRow(convertIccToSms(message, 0, subscription));
+            cursor.addRow(convertIccToSms(message, 0));
             return withIccNotificationUri(cursor);
         } catch (NumberFormatException exception) {
             throw new IllegalArgumentException(
@@ -323,28 +281,24 @@ public class SmsProvider extends ContentProvider {
     /**
      * Return a Cursor listing all the messages stored on the ICC.
      */
-    private Cursor getAllMessagesFromIcc(int subscription) {
+    private Cursor getAllMessagesFromIcc() {
+        SmsManager smsManager = SmsManager.getDefault();
         ArrayList<SmsMessage> messages;
 
         // use phone app permissions to avoid UID mismatch in AppOpsManager.noteOp() call
         long token = Binder.clearCallingIdentity();
         try {
-            if (subscription == MSimConstants.INVALID_SUBSCRIPTION) {
-                SmsManager smsManager = SmsManager.getDefault();
-                messages = smsManager.getAllMessagesFromIcc();
-            } else {
-                MSimSmsManager mSimSmsManager = MSimSmsManager.getDefault();
-                messages = mSimSmsManager.getAllMessagesFromIcc(subscription);
-            }
+            messages = smsManager.getAllMessagesFromIcc();
         } finally {
             Binder.restoreCallingIdentity(token);
         }
+
         final int count = messages.size();
         MatrixCursor cursor = new MatrixCursor(ICC_COLUMNS, count);
         for (int i = 0; i < count; i++) {
             SmsMessage message = messages.get(i);
             if (message != null) {
-                cursor.addRow(convertIccToSms(message, i, subscription));
+                cursor.addRow(convertIccToSms(message, i));
             }
         }
         return withIccNotificationUri(cursor);
@@ -636,17 +590,9 @@ public class SmsProvider extends ContentProvider {
                 break;
 
             case SMS_ICC:
-                String messageIndexIcc = url.getPathSegments().get(MESSAGE_ID);
+                String messageIndexString = url.getPathSegments().get(1);
 
-                return deleteMessageFromIcc(messageIndexIcc, MSimConstants.INVALID_SUBSCRIPTION);
-            case SMS_ICC1:
-                String messageIndexIcc1 = url.getPathSegments().get(MESSAGE_ID);
-
-                return deleteMessageFromIcc(messageIndexIcc1, MSimConstants.SUB1);
-            case SMS_ICC2:
-                String messageIndexIcc2 = url.getPathSegments().get(MESSAGE_ID);
-
-                return deleteMessageFromIcc(messageIndexIcc2, MSimConstants.SUB2);
+                return deleteMessageFromIcc(messageIndexString);
 
             default:
                 throw new IllegalArgumentException("Unknown URL");
@@ -662,22 +608,13 @@ public class SmsProvider extends ContentProvider {
      * Delete the message at index from ICC.  Return true iff
      * successful.
      */
-    private int deleteMessageFromIcc(String messageIndexString, int subscription) {
-        // use phone app permissions to avoid UID mismatch in AppOpsManager.noteOp() call
-        long token = Binder.clearCallingIdentity();
-        try {
-            if (subscription == MSimConstants.INVALID_SUBSCRIPTION) {
-                SmsManager smsManager = SmsManager.getDefault();
-                return smsManager.deleteMessageFromIcc(
-                        Integer.parseInt(messageIndexString))
-                        ? DELETE_SUCCESS : DELETE_FAIL;
-            } else {
-                MSimSmsManager mSimSmsManager = MSimSmsManager.getDefault();
+    private int deleteMessageFromIcc(String messageIndexString) {
+        SmsManager smsManager = SmsManager.getDefault();
 
-                return mSimSmsManager.deleteMessageFromIcc(
-                        Integer.parseInt(messageIndexString), subscription)
-                        ? DELETE_SUCCESS : DELETE_FAIL;
-            }
+        try {
+            return smsManager.deleteMessageFromIcc(
+                    Integer.parseInt(messageIndexString))
+                    ? 1 : 0;
         } catch (NumberFormatException exception) {
             throw new IllegalArgumentException(
                     "Bad SMS ICC ID: " + messageIndexString);
@@ -685,7 +622,6 @@ public class SmsProvider extends ContentProvider {
             ContentResolver cr = getContext().getContentResolver();
 
             cr.notifyChange(ICC_URI, null);
-            Binder.restoreCallingIdentity(token);
         }
     }
 
